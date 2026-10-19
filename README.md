@@ -117,6 +117,14 @@ Do not use screenshot + OCR for a normal web page when CDP is available. That is
 
 The CDP profile is separate from your daily browser profile. Log in once and later sessions reuse the cookies.
 
+Or use the launcher:
+
+```powershell
+.\launch-cdp.ps1 -Url "https://github.com"
+.\launch-cdp.ps1 -Headless -Port 9224 -Url "https://example.com"
+.\launch-cdp.ps1 -BrowserPath "D:\path\to\chromium.exe" -Url "https://intranet.example"
+```
+
 ## Occluded windows
 
 ```powershell

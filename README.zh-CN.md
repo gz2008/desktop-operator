@@ -46,6 +46,14 @@ cd desktop-operator
 
 普通网页不要用“截图 + OCR + 坐标点击”；有 CDP 时那是明显的慢路径。
 
+一键启动 CDP 浏览器：
+
+```powershell
+.\launch-cdp.ps1 -Url "https://github.com"
+.\launch-cdp.ps1 -Headless -Port 9224 -Url "https://example.com"
+.\launch-cdp.ps1 -BrowserPath "D:\path\to\chromium.exe" -Url "https://intranet.example"
+```
+
 批量动作：
 
 ```powershell
