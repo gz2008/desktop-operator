@@ -216,7 +216,12 @@ class BrowserSession:
         self.pw = sync_playwright().start()
         self.browser = self.pw.chromium.connect_over_cdp(cdp_url)
         self.ctx = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
-        self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
+        pages = self.ctx.pages
+        self.page = pages[0] if pages else self.ctx.new_page()
+        for candidate in pages:
+            if candidate.url.startswith(("http://", "https://", "file://")):
+                self.page = candidate
+                break
         self.attached = True
         self.headed = True
         return self.page
