@@ -373,13 +373,18 @@ def cmd_win(args):
     win = find_window(args.get("title"), bool(args.get("exact", False)))
     if win is None:
         return {"ok": False, "error": "window not found", "title": args.get("title")}
-    if action == "activate":
-        win.SetFocus()
-        try:
-            win.GetWindowPattern().SetWindowVisualState(auto.WindowVisualState.Normal)
-        except Exception:
-            pass
-        return {"ok": True, "title": win.Name}
+    if action in {"activate", "restore"}:
+        hwnd = win.NativeWindowHandle
+        ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        ctypes.windll.user32.BringWindowToTop(hwnd)
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+        if action == "activate":
+            win.SetFocus()
+        return {"ok": True, "title": win.Name, "hwnd": hwnd}
+    if action == "minimize":
+        hwnd = win.NativeWindowHandle
+        ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+        return {"ok": True, "title": win.Name, "hwnd": hwnd}
     if action == "tree":
         depth = int(args.get("depth", 3))
         limit = int(args.get("limit", 200))
@@ -548,6 +553,10 @@ def cmd_mouse(args):
     if action == "move":
         auto.SetCursorPos(int(args["x"]), int(args["y"]))
         return {"ok": True}
+    if action == "wheel":
+        delta = int(args.get("delta", -600))
+        ctypes.windll.user32.mouse_event(0x0800, 0, 0, delta, 0)
+        return {"ok": True, "delta": delta}
     if action == "position":
         x, y = auto.GetCursorPos()
         return {"x": x, "y": y}
