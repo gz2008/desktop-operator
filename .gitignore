@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+profile/
+cdp-test/
+cdp-profile/
+shots/
+secrets/
+operator.log
+*.log
+.env

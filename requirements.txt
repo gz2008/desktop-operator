@@ -1,0 +1,5 @@
+playwright>=1.50
+uiautomation>=2.0.20
+mss>=10.0
+pillow>=11.0
+pyperclip>=1.9
