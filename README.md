@@ -27,14 +27,19 @@ Desktop Operator fixes the loop:
 ## Features
 
 - Browser control through Playwright with a dedicated Edge profile.
+- CDP launch/attach for real DOM control of a Chromium browser.
 - Compact DOM queries: tag, text, id, name, role, visibility, box.
 - Multi-selector click/fill, fast failure diagnostics.
 - Batch actions in one HTTP call.
 - CDP attach to an existing Edge started with `--remote-debugging-port`.
 - Native Windows control through UI Automation: list windows, inspect control trees, click, type, send keys.
+- `PrintWindow` capture of a specific window, even when it is covered by another app.
+- Topmost/normal window control for reliable input focus.
 - Screen capture and Chinese OCR using the built-in Windows OCR engine.
+- Region OCR to cut screenshot and recognition cost.
 - Text-based coordinate clicks for canvas/VNC interfaces.
 - Capture click-triggered API responses as JSON.
+- File-input uploads through Playwright when the browser is CDP-controlled.
 - DPAPI-backed local secret storage.
 
 ## Requirements
@@ -63,27 +68,65 @@ The first command starts the daemon automatically. `system.shutdown` stops it; t
 |---|---|
 | `system.info` | Monitors, Python, profile, daemon state |
 | `browser.goto url=... headed=true` | Open a page |
+| `browser.launch_cdp port=9223 profile=...` | Launch Chromium/Edge with CDP and attach |
+| `browser.attach` | Attach to a CDP endpoint (auto-detects 9222/9223/9333/9224) |
 | `browser.query selector=... limit=10` | Compact element matches |
 | `browser.find_text text=...` | Find elements by visible text |
 | `browser.click selectors=[...]` | Try selectors in order, click the first match |
 | `browser.fill selector=... value=...` | Fill a field |
+| `browser.set_input_files selector=... files=...` | Upload files through a file input |
 | `browser.text` | Page text |
 | `browser.capture_response ...` | Capture a click-triggered API response |
-| `browser.attach cdp_url=...` | Attach to an existing Edge via CDP |
 | `win.list` | Top-level windows |
 | `win.tree title=... depth=4 limit=120` | Compact UI Automation tree |
 | `win.click title=... name=...` | Click a native control |
 | `win.type title=... text=...` | Paste text into the focused control |
 | `win.keys keys={Ctrl}s` | Send keys |
+| `win.topmost title=...` | Keep a window above overlapping windows |
+| `win.normal title=...` | Remove topmost |
+| `win.capture title=...` | Capture a specific window (PrintWindow) |
 | `screen.capture` | Capture the primary/virtual screen |
 | `screen.ocr path=...` | OCR lines and boxes |
+| `screen.ocr region=x,y,w,h` | OCR only a screen region |
 | `screen.find_text query=...` | Locate text on screen |
 | `screen.click_text query=...` | Click the center of a text match |
 | `mouse.click x=... y=...` | Coordinate click |
+| `mouse.wheel delta=-600` | Scroll the focused window |
 | `keyboard.type text=...` | Type arbitrary text via clipboard |
 | `batch` | Run multiple actions in one request |
 
 See [README.zh-CN.md](README.zh-CN.md) for more examples.
+
+## Choose the control surface
+
+Use the fastest surface the app exposes:
+
+1. **Browser + CDP**: `browser.launch_cdp` or `browser.attach`, then `browser.query/click/fill/set_input_files`. This is DOM-level, deterministic, and does not care about window overlap.
+2. **Native app + UI Automation**: `win.tree`, then `win.click/type`. This is structured and fast when the app exposes accessibility.
+3. **Canvas / remote desktop / custom-drawn UI**: `win.capture` or `screen.capture`, `screen.ocr region=...`, then coordinate clicks. This is the last resort because it depends on pixels and z-order.
+
+Do not use screenshot + OCR for a normal web page when CDP is available. That is the slow path.
+
+## CDP launch
+
+```powershell
+.\op.ps1 browser.launch_cdp "port=9223" "profile=D:\path\to\cdp-profile" "url=https://github.com"
+.\op.ps1 browser.query "selector=button" "limit=10"
+.\op.ps1 browser.set_input_files "selector=input[type=file]" "file=D:\path\to\file.zip"
+```
+
+The CDP profile is separate from your daily browser profile. Log in once and later sessions reuse the cookies.
+
+## Occluded windows
+
+```powershell
+.\op.ps1 win.capture "title=GitHub"
+.\op.ps1 win.topmost "title=GitHub"
+.\op.ps1 mouse.click "x=600" "y=400"
+.\op.ps1 win.normal "title=GitHub"
+```
+
+`win.capture` uses `PrintWindow(PW_RENDERFULLCONTENT)` and does not depend on the window being visible. `win.topmost` is useful for short input batches; remove it with `win.normal` afterwards.
 
 ## Batch example
 

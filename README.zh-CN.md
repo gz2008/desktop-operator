@@ -20,18 +20,31 @@ cd desktop-operator
 ## 常用命令
 
 ```powershell
+.\op.ps1 browser.launch_cdp "port=9223" "profile=D:\path\to\cdp-profile" "url=https://github.com"
 .\op.ps1 browser.goto "url=https://example.com" "headed=true"
 .\op.ps1 browser.query "selector=button" "limit=10"
 .\op.ps1 browser.find_text "text=登录"
 .\op.ps1 browser.click "selectors=[\".login-btn\",\"text=登录\"]"
 .\op.ps1 browser.fill "selector=input[name=user]" "value=admin"
+.\op.ps1 browser.set_input_files "selector=input[type=file]" "file=D:\path\to\file.zip"
 .\op.ps1 win.list
 .\op.ps1 win.tree "title=记事本" "depth=4" "limit=120"
 .\op.ps1 win.click "title=记事本" "name=保存"
+.\op.ps1 win.capture "title=记事本"
+.\op.ps1 win.topmost "title=记事本"
 .\op.ps1 screen.capture
+.\op.ps1 screen.ocr "region=0,0,800,600"
 .\op.ps1 screen.find_text "query=确定"
 .\op.ps1 screen.click_text "query=确定"
 ```
+
+## 控制面优先级
+
+1. **浏览器优先 CDP**：`browser.launch_cdp` 或 `browser.attach`，之后用 DOM 选择器、`set_input_files`、`evaluate`。不受窗口遮挡影响，速度最快。
+2. **原生应用优先 UI Automation**：`win.tree` 找控件，`win.click/type` 操作。结构化、稳定。
+3. **画布/远程桌面才用 OCR + 坐标**：`win.capture` 或 `screen.capture`，`screen.ocr region=...`，再坐标点击。这是最后手段。
+
+普通网页不要用“截图 + OCR + 坐标点击”；有 CDP 时那是明显的慢路径。
 
 批量动作：
 

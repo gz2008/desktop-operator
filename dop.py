@@ -10,6 +10,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+from ctypes import wintypes
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -17,7 +18,7 @@ from pathlib import Path
 import mss
 import pyperclip
 import uiautomation as auto
-from PIL import Image
+from PIL import Image, ImageGrab
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
@@ -49,6 +50,102 @@ SHOTS.mkdir(parents=True, exist_ok=True)
 
 def now_stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def edge_path() -> str:
+    candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return "msedge.exe"
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+def capture_window(hwnd: int, path: Path):
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    user32.GetWindowDC.restype = wintypes.HDC
+    user32.GetWindowDC.argtypes = [wintypes.HWND]
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.PrintWindow.restype = wintypes.BOOL
+    user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    gdi32.CreateCompatibleDC.restype = wintypes.HDC
+    gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+    gdi32.CreateCompatibleBitmap.restype = wintypes.HANDLE
+    gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+    gdi32.SelectObject.restype = wintypes.HANDLE
+    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
+    gdi32.GetDIBits.restype = ctypes.c_int
+    gdi32.GetDIBits.argtypes = [
+        wintypes.HDC,
+        wintypes.HANDLE,
+        wintypes.UINT,
+        wintypes.UINT,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.UINT,
+    ]
+    gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+    gdi32.DeleteDC.argtypes = [wintypes.HDC]
+
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise RuntimeError("GetWindowRect failed")
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        raise RuntimeError("window has no drawable area")
+
+    hdc = user32.GetWindowDC(hwnd)
+    memdc = gdi32.CreateCompatibleDC(hdc)
+    bmp = gdi32.CreateCompatibleBitmap(hdc, width, height)
+    old = gdi32.SelectObject(memdc, bmp)
+    printed = user32.PrintWindow(hwnd, memdc, 2)  # PW_RENDERFULLCONTENT
+
+    bmi = BITMAPINFOHEADER()
+    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.biWidth = width
+    bmi.biHeight = -height
+    bmi.biPlanes = 1
+    bmi.biBitCount = 32
+    bmi.biCompression = 0
+    buf = ctypes.create_string_buffer(width * height * 4)
+    rows = gdi32.GetDIBits(memdc, bmp, 0, height, buf, ctypes.byref(bmi), 0)
+    img = Image.frombuffer("RGBA", (width, height), buf, "raw", "BGRA", 0, 1).convert("RGB")
+    img.save(path)
+
+    gdi32.SelectObject(memdc, old)
+    gdi32.DeleteObject(bmp)
+    gdi32.DeleteDC(memdc)
+    user32.ReleaseDC(hwnd, hdc)
+    return {
+        "ok": bool(printed) and rows > 0 and img.getbbox() is not None,
+        "method": "printwindow",
+        "path": str(path),
+        "width": width,
+        "height": height,
+        "bytes": path.stat().st_size,
+        "rect": [rect.left, rect.top, rect.right, rect.bottom],
+    }
 
 
 def clamp_text(value, limit=4000):
@@ -198,8 +295,60 @@ def cmd_browser(args):
         BROWSER.close()
         return {"closed": True}
     if action == "attach":
-        page = BROWSER.attach(args.get("cdp_url", "http://127.0.0.1:9222"))
+        cdp_url = args.get("cdp_url")
+        if not cdp_url:
+            for port in (9222, 9223, 9333, 9224):
+                candidate = f"http://127.0.0.1:{port}"
+                try:
+                    with urllib.request.urlopen(candidate + "/json/version", timeout=0.6) as resp:
+                        json.loads(resp.read().decode("utf-8"))
+                    cdp_url = candidate
+                    break
+                except Exception:
+                    continue
+        if not cdp_url:
+            raise RuntimeError("no CDP endpoint found on 9222/9223/9333/9224")
+        page = BROWSER.attach(cdp_url)
         return {"attached": True, "url": page.url, "title": page.title()}
+    if action == "launch_cdp":
+        port = int(args.get("port", 9223))
+        profile = args.get("profile") or str(ROOT / "cdp-profile")
+        browser_path = args.get("browser_path") or edge_path()
+        headless = bool(args.get("headless", False))
+        cmd = [
+            browser_path,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={profile}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-networking",
+        ]
+        if headless:
+            cmd.append("--headless=new")
+        cmd.append(args.get("url") or "about:blank")
+        subprocess.Popen(
+            cmd,
+            creationflags=subprocess.CREATE_NO_WINDOW if headless else 0,
+        )
+        info = None
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1) as resp:
+                    info = json.loads(resp.read().decode("utf-8"))
+                break
+            except Exception:
+                time.sleep(0.3)
+        if info is None:
+            raise RuntimeError(f"CDP endpoint did not start on port {port}")
+        page = BROWSER.attach(f"http://127.0.0.1:{port}")
+        return {
+            "cdp_url": f"http://127.0.0.1:{port}",
+            "browser": info.get("Browser"),
+            "profile": profile,
+            "url": page.url,
+            "title": page.title(),
+        }
 
     page = bw_page(args)
 
@@ -266,6 +415,13 @@ def cmd_browser(args):
     if action == "press":
         page.keyboard.press(args["key"])
         return {"ok": True}
+    if action == "set_input_files":
+        selector = args["selector"]
+        files = args.get("files") or args.get("file")
+        if isinstance(files, str):
+            files = [files]
+        page.locator(selector).first.set_input_files(files, timeout=int(args.get("timeout", 5000)))
+        return {"ok": True, "selector": selector, "count": len(files)}
     if action == "eval":
         value = page.evaluate(args["expr"])
         return {"value": clamp_text(value)}
@@ -385,6 +541,48 @@ def cmd_win(args):
         hwnd = win.NativeWindowHandle
         ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
         return {"ok": True, "title": win.Name, "hwnd": hwnd}
+    if action in {"topmost", "normal"}:
+        hwnd = win.NativeWindowHandle
+        insert_after = -1 if action == "topmost" else -2
+        ctypes.windll.user32.SetWindowPos(
+            hwnd, insert_after, 0, 0, 0, 0, 0x0002 | 0x0001
+        )
+        return {
+            "ok": True,
+            "title": win.Name,
+            "hwnd": hwnd,
+            "topmost": action == "topmost",
+        }
+    if action == "capture":
+        hwnd = win.NativeWindowHandle
+        ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        path = Path(args.get("path") or (SHOTS / f"window-{now_stamp()}.png"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            result = capture_window(hwnd, path)
+            if result["ok"]:
+                return result
+        except Exception as exc:
+            result = {"ok": False, "method": "printwindow", "error": str(exc)}
+        ctypes.windll.user32.SetWindowPos(
+            hwnd, -1, 0, 0, 0, 0, 0x0002 | 0x0001
+        )
+        time.sleep(0.15)
+        r = win.BoundingRectangle
+        bbox = (int(r.left), int(r.top), int(r.right), int(r.bottom))
+        img = ImageGrab.grab(bbox=bbox, all_screens=True)
+        img.save(path)
+        ctypes.windll.user32.SetWindowPos(
+            hwnd, -2, 0, 0, 0, 0, 0x0002 | 0x0001
+        )
+        return {
+            "path": str(path),
+            "width": img.width,
+            "height": img.height,
+            "bytes": path.stat().st_size,
+            "rect": list(bbox),
+            "fallback": result,
+        }
     if action == "tree":
         depth = int(args.get("depth", 3))
         limit = int(args.get("limit", 200))
@@ -481,6 +679,18 @@ def capture_screen(path: Path | None = None, region=None):
     return {"path": str(path), "width": img.width, "height": img.height, "bytes": path.stat().st_size}
 
 
+def parse_region(value):
+    if not value:
+        return None
+    if isinstance(value, str):
+        parts = [int(float(item)) for item in value.replace(" ", "").split(",")]
+        if len(parts) != 4:
+            raise ValueError("region must be x,y,w,h")
+        x, y, w, h = parts
+        return {"left": x, "top": y, "width": w, "height": h}
+    return value
+
+
 def run_ocr(path: str):
     ps = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     cmd = [str(ps), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "ocr.ps1"), "-Path", path]
@@ -493,15 +703,16 @@ def run_ocr(path: str):
 
 def cmd_screen(args):
     action = args["action"]
+    region = parse_region(args.get("region"))
     if action == "capture":
-        return capture_screen(args.get("path"))
+        return capture_screen(args.get("path"), region)
     if action == "monitors":
         with mss.mss() as sct:
             return {"monitors": sct.monitors}
     if action in {"ocr", "find_text", "click_text"}:
         path = args.get("path")
         if not path:
-            path = capture_screen()["path"]
+            path = capture_screen(region=region)["path"]
         data = run_ocr(path)
         lines = data.get("lines", [])
         compact = [
